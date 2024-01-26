@@ -2,19 +2,24 @@
 #![allow(unused_braces)]
 #![warn(unused)]            
 
+// use env;
+
+use std::borrow::BorrowMut;
 use std::collections::HashMap;
-use std::io::{self, Write, Stdout};
+use std::io::{self, Write, Stdout, ErrorKind, Error};
 // use std::fs::{self, File, OpenOptions};
 use std::{thread};
 use std::sync::{Arc, Mutex};
 use std::io::{stdout};
 use std::time::Duration;
 
-use tokio::{self,
-            task::JoinHandle,
-            io::{AsyncWriteExt, AsyncReadExt},
-            fs::File
+use tokio::{task::JoinHandle,
+            io::{AsyncWriteExt},
+            fs::File,
+            net::TcpListener
 };
+
+use clipboard::{self, ClipboardContext, ClipboardProvider};
 
 use reqwest;
 use is_url::is_url;
@@ -23,10 +28,10 @@ use indicatif::{ProgressBar, MultiProgress, ProgressStyle};
 
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::cursor::{MoveTo};
-use crossterm::event::{poll, read, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, poll, read, Event, KeyCode, KeyModifiers, EnableBracketedPaste, DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture};
 use crossterm::{QueueableCommand, ExecutableCommand};
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Prompt {
     buffer: Vec<char>,
     cursor: usize,
@@ -39,6 +44,11 @@ impl Prompt {
         }
         Ok(())
     }
+
+    fn read_clipboard(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+        let mut ctx: ClipboardContext = ClipboardProvider::new()?;
+        ctx.get_contents().map(|s| s.to_string())
+    }
     
     fn insert(&mut self, x: char) {
         if self.cursor > self.buffer.len() {
@@ -49,8 +59,12 @@ impl Prompt {
     }
 
     fn insert_str(&mut self, text: &str) {
+        // println!("Clipboard content: {:?}", text);
         for x in text.chars() {
-            self.insert(x)
+            if x != '\r' && x != '\n' {
+                // println!("Inserting character: {:?}", x);
+                self.insert(x)
+            }
         }
     }
 
@@ -115,7 +129,7 @@ impl Prompt {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct DownloadResults {
     dr: Vec<String>
 }
@@ -135,41 +149,203 @@ impl DownloadResults {
     }
 }
 
-fn slice_from_end(s: &str, n: usize) -> Option<&str> {
-    s.char_indices().rev().nth(n).map(|(i, _)| &s[i..])
+#[derive(Default, Clone, Copy)]
+struct RenderingManager {
+    rendering: bool,
+    w: u16,
+    h: u16,
+    fps: i16,
+    interval: u64
 }
+
+impl RenderingManager {
+    pub fn new(w: u16, h: u16, fps: i16) -> Self {
+        RenderingManager {
+            rendering: RenderingManager::check_from(w, h),
+            w,
+            h,
+            fps,
+            interval: RenderingManager::calculate_interval(fps)
+        }
+    }
+
+    pub fn calculate_interval(fps: i16) -> u64 {
+        (1000 / fps) as u64
+    }
+
+    pub fn new_fps(&mut self, fps: i16) -> u64 {
+        self.fps = fps;
+        self.interval = RenderingManager::calculate_interval(fps);
+        self.interval
+    }
+    
+    pub fn get_fps_interval(&mut self) -> u64 {
+        self.interval
+    }
+    
+    pub fn resize(&mut self, w: u16, h: u16) -> (u16, u16) {
+        self.w = w;
+        self.h = h;
+        (w, h)
+    }
+
+    pub fn check(&mut self) -> bool {
+        self.rendering = RenderingManager::check_from(self.w, self.h);
+        self.rendering
+    }
+    
+    pub fn check_from(w: u16, h: u16) -> bool {
+        w > 20 && h > 20
+    }
+
+    pub fn is_enabled(&mut self) -> bool {
+        self.rendering
+    }
+    
+    // pub fn toggle(&mut self) -> bool {
+    //     self.rendering = !self.rendering;
+    //     self.rendering
+    // }
+
+    pub fn set(&mut self, new: bool) -> bool {
+        self.rendering = new;
+        new
+    }
+}
+
+// fn slice_from_end(s: &str, n: usize) -> Option<&str> {
+//     s.char_indices().rev().nth(n).map(|(i, _)| &s[i..])
+// }
 
 fn slice_from_start(s: String, n: usize) -> String {
     s.chars().into_iter().take(n).collect()
 }
 
-fn main() -> io::Result<()> {
+async fn handle_connection(stream: tokio::net::TcpStream) {
+    // let ws_stream = accept_async(stream).await.expect("Error during WebSocket handshake");
+    let mut outside_data_chunks: Vec<u8> = Vec::new();
+    while let Ok(_) = stream.readable().await {
+        let mut buf = Vec::with_capacity(4096);
+
+        match stream.try_read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                println!("read {} bytes", n);
+                outside_data_chunks.extend_from_slice(&mut buf);
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                continue;
+            }
+            Err(_e) => {
+                // return Err(e.into());
+            }
+        }
+    }
+
+    let data_str = String::from_utf8_lossy(&outside_data_chunks).to_string();
+
+    println!("\nURL: {}\n", data_str);
+    
+    // let (write, read) = ws_stream.split();
+    // let _result = tokio::spawn(tokio_tungstenite::tokio::io::copy(read, write)).await;
+}
+
+fn usage_message(error: bool) -> io::Result<()> {
+    let command = std::env::args().into_iter().next().unwrap();
+    println!("{} help - shows this message", command);
+    println!("{} monitor - enter monitor mode and wait for downloads from your browser.\n", command);
+
+    if error {return Err(std::io::Error::new(ErrorKind::Other, "invalid command"))} else {return Ok(())};
+}
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    if std::env::args().into_iter().len() > 1 {
+        println!("\n");
+        let argument = std::env::args().into_iter().nth(1).unwrap();
+        if argument.contains("help") {
+            return usage_message(false);
+        } else if argument.contains("monitor") {
+            let listener = TcpListener::bind("127.0.0.1:6969").await.expect("Failed to bind");
+            println!("Server listening on 127.0.0.1:6969");
+
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(handle_connection(stream));
+            }
+            
+            return Ok(())                
+        } else {
+            return usage_message(true);
+        }
+    };
+    
     let mut stdout = stdout();
 
     let mut prompt = Prompt::default();
     
     let _ = terminal::enable_raw_mode().unwrap();
+    if let Err(r) = stdout.execute(EnableBracketedPaste) {
+        eprintln!("Your terminal does not support bracket paste. {:?}", r);
+        return Err(Error::new(ErrorKind::Other, format!("{:?}", r)));
+    }
 
-    let (mut w, mut h) = terminal::size().unwrap();
+    let is_mouse_capture_enabled: bool = if let Err(_) = stdout.execute(EnableMouseCapture) { false } else { true };
+    
+    let mut rendering = {
+        let (w, h) = terminal::size().unwrap();
+        RenderingManager::new(w, h, 60)
+    };
+    
     let bar_char = "─";
-    let mut bar = bar_char.repeat(w as usize);
+    
+    let message_start = if is_mouse_capture_enabled {
+        "Type in the URL, and hit enter to start the download! ESC or Ctrl+C to exit and Ctrl+K to clear the prompt and Left click to paste"
+    } else {
+        "Type in the URL, and hit enter to start the download! ESC or Ctrl+C to exit and Ctrl+K to clear the prompt"
+    };
 
+    
     let mut download_requested: Vec<String> = Vec::new();
-    let mut download_results = DownloadResults::default();
+    let mut download_results: DownloadResults = DownloadResults::default();
 
     let mut quit = false;
-
     let task_count = Arc::new(Mutex::new(0));
 
     while !quit {
-        while poll(Duration::ZERO)? {
+        let mut bar = bar_char.repeat(rendering.w as usize);
+        
+        while poll(Duration::from_millis(rendering.get_fps_interval() / 2))? {
             match read()? {
                 Event::Resize(nw, nh) => {
-                    w = nw;
-                    h = nh;
-                    bar = bar_char.repeat(w as usize / bar_char.len());
+                    rendering.resize(nw, nh);
+                    bar = bar_char.repeat(rendering.w as usize / bar_char.len());
+                    rendering.check();
+                },
+                Event::FocusGained => {
+                    rendering.set(true);
+                },
+                Event::FocusLost => {
+                    rendering.set(false);
                 },
                 Event::Paste(data) => prompt.insert_str(&data),
+                Event::Mouse(event) => {
+                    match event.kind {
+                        event::MouseEventKind::Down(key) => {
+                            match key {
+                                event::MouseButton::Left => {
+                                    if let Ok(data) = prompt.read_clipboard() {
+                                        prompt.insert_str(data.as_str());
+                                    }                                    
+                                },
+                                _ => {}
+                            }
+                            
+                        },
+                        _ => {}
+                    };
+                    // prompt.insert_str(&data)
+                    // return Ok(())
+                },
                 Event::Key(event) => {
                     let key = event.code;
                     
@@ -188,7 +364,18 @@ fn main() -> io::Result<()> {
                                 prompt.insert(x);
                             }
                         },
+                        // #[cfg(feature = "bracketed-paste")]
                         KeyCode::Enter => {
+                            if prompt.buffer.is_empty() {
+                                let message = "URL vazio. Insira um URL válido";
+                                stdout.queue(MoveTo(rendering.w/2 - (message.len() / 2) as u16, rendering.h/2)).unwrap();
+                                stdout.write(message.as_bytes()).unwrap();
+                                stdout.flush().unwrap();
+
+                                thread::sleep(Duration::from_secs(5));
+                                break;
+                            }
+                            
                             let temp_url = String::from_iter(&prompt.buffer);
                             let this_url = temp_url.clone();
                             
@@ -196,33 +383,35 @@ fn main() -> io::Result<()> {
                             let task_count = Arc::clone(&task_count);
                             
                             prompt.clear();
-
+                            
+                            if is_mouse_capture_enabled {
+                                let _ = stdout.execute(DisableMouseCapture).unwrap();
+                            }
                             let _ = terminal::disable_raw_mode().unwrap();
                             // thread::scope(|s| {
                             //     s.spawn(|| {
                             // dbg!("thread started");
                             // let rt = runtime::Runtime::new().unwrap();
 
-                            let display_name = format!("{}...", slice_from_start(this_url.to_string(), &this_url.len() - 15));
+                            // dbg!(this_url.to_string(), this_url.to_string().len(), this_url.len());
 
-                            // download_file_in_pieces(
-                            //     download_requested.get(download_requested.len() - 1).unwrap().as_str(),
-                            //     format!("output{}", download_requested.len()).as_str(),
-                            //     task_count
-                            // );
+                            let display_name = if this_url.len() > (rendering.w/2 + 20) as usize {
+                                let slice = slice_from_start(this_url.to_string(),
+                                                             this_url.len() - ((rendering.w/2) - 20) as usize);
+                                format!("{}...", slice)
+                            } else {
+                                this_url.to_string()
+                            };
 
+                            rendering.new_fps(20);
                             
-                            // let url = this_url.clone();
-                            // let db = download_requested.len().clone();
+                            stdout.queue(Clear(ClearType::All)).unwrap();
+                            let loading_message = String::from("Loading, please wait...");
+                            stdout.queue(MoveTo(rendering.w/2 - (loading_message.len() / 2) as u16, rendering.h/2)).unwrap();
+                            stdout.write(loading_message.as_bytes()).unwrap();
+                            stdout.queue(MoveTo(0,rendering.h-1)).unwrap();
+                            stdout.flush().unwrap();
                             
-                            // download_file_in_pieces(
-                            //     &url,
-                            //     format!("output{}", db).as_str(),
-                            //     task_count
-                            // )
-
-                            stdout.execute(Clear(ClearType::All)).unwrap();
-
                             thread::scope(|s| {
                                 s.spawn(|| {
                                     let download_try = download_file_in_pieces(
@@ -230,30 +419,29 @@ fn main() -> io::Result<()> {
                                         task_count
                                     );
                                     if let Ok(_) = download_try {
-                                        // println!("download thread finished");
                                         download_results.push(format!("{} finished", display_name));
-                                        // terminal::enable_raw_mode().unwrap();
-                                        // rt.shutdown_background()
+                                        stdout.queue(Clear(ClearType::All)).unwrap();
+                                        
+                                        let message = String::from("Sucess. {} is complete.");
+                                        stdout.queue(MoveTo(rendering.w/2 - (message.len() / 2) as u16, rendering.h/2)).unwrap();
+                                        stdout.write(loading_message.as_bytes()).unwrap();
+                                        stdout.queue(MoveTo(0,rendering.h-1)).unwrap();
                                     } else if let Err(reason) = download_try {
-                                        // eprintln!("an error occurred on the download thread.");
                                         download_results.push(format!("{} failed. {}", display_name, reason));
-                                        // rt.shutdown_background()
+                                        stdout.queue(Clear(ClearType::All)).unwrap();
+                                        
+                                        let message = String::from(format!("{} Failed.", display_name));
+                                        stdout.queue(MoveTo(rendering.w/2 - (message.len() / 2) as u16, rendering.h/2)).unwrap();
+                                        stdout.write(loading_message.as_bytes()).unwrap();
+                                        stdout.queue(MoveTo(0,rendering.h-1)).unwrap();
                                     }
-                                    
+
+                                    stdout.flush().unwrap();
                                     let _ = terminal::enable_raw_mode().unwrap();
-                                    thread::sleep(Duration::from_secs(5));
+                                    rendering.new_fps(40);
+                                    thread::sleep(Duration::from_secs(3));
                                 });
                             });
-                            
-                            // println!("current concurrent download thread name={}",
-                            //          current_download.thread().name().unwrap_or("no_name"));
-                            // while !current_download.is_finished() {};
-
-                            // download_results.push(String::from(format!("finished {}", display_name)));
-                            
-                            // terminal::enable_raw_mode().unwrap();
-                            //     });
-                            // });
                         },
                         KeyCode::Right => {
                             if event.modifiers.contains(KeyModifiers::CONTROL) {
@@ -271,36 +459,55 @@ fn main() -> io::Result<()> {
                         },
                         _ => {}
                     }
-                },
-                _ => {}
+                }
             }
         }
 
+        if !rendering.is_enabled() {
+            thread::sleep(Duration::from_millis(rendering.get_fps_interval() + 100));
+            continue;
+        };
         stdout.queue(Clear(ClearType::All)).unwrap();
-        download_results.render(1, &mut stdout);
 
-        stdout.queue(MoveTo(0, h-3)).unwrap();
-        stdout.write(b"Type in the URL, and hit enter to start the download! ESC to exit and Ctrl+K to clear the prompt").unwrap();
+        let offset = if message_start.len() > rendering.w as usize {
+            (message_start.len() as f32 / rendering.w as f32).floor()
+        } else {
+            0f32
+        };
+
+        stdout.queue(MoveTo(0, rendering.h-(4 + offset as u16))).unwrap();
+        stdout.write(bar.as_bytes()).unwrap();
         
-        stdout.queue(MoveTo(0, h-2)).unwrap();
+        stdout.queue(MoveTo(0, rendering.h-(3 + offset as u16))).unwrap();
+        
+        stdout.write(message_start.as_bytes()).unwrap();
+
+        stdout.queue(MoveTo(0, rendering.h-2)).unwrap();
         stdout.write(bar.as_bytes()).unwrap();
 
-        stdout.queue(MoveTo(0, h-1)).unwrap();
+        stdout.queue(MoveTo(0, rendering.h-1)).unwrap();
         stdout.write(String::from_iter(&prompt.buffer).as_bytes()).unwrap();
-
+        
+        download_results.render((rendering.h-(4 + offset as u16)) as usize, &mut stdout);        
+        
         // stdout.queue(MoveTo(terminal_cursor.x, terminal_cursor.y)).unwrap();
-        if let Some(y) = h.checked_sub(1) {
+        if let Some(y) = rendering.h.checked_sub(1) {
             let x = 0;
-            if let Some(w) = w.checked_sub(1) {
+            if let Some(w) = rendering.w.checked_sub(1) {
                 prompt.sync_terminal_cursor(&mut stdout, x, y as usize, w as usize)?;
             }
         }
         
         stdout.flush().unwrap();
-        thread::sleep(Duration::from_millis(33));
-    };
+        thread::sleep(Duration::from_millis(rendering.get_fps_interval()));
+    };  
+
+    if is_mouse_capture_enabled {
+        let _ = stdout.execute(DisableMouseCapture).unwrap();
+    }
     
     let _ = terminal::disable_raw_mode().unwrap();
+    let _ = stdout.execute(DisableBracketedPaste).unwrap();
     Ok(())
 }
 
@@ -309,7 +516,6 @@ async fn download_chunk(
     url: String,
     start: usize,
     end: usize,
-    // file: Arc<tokio::sync::Mutex<File>>,
     filename: String,
     pb: ProgressBar,
     task_count: Arc<Mutex<usize>>
@@ -322,39 +528,19 @@ async fn download_chunk(
 
     match response {
         Ok(mut response) => {
-            // dbg!(start, end);
-            
-            // pb.set_position(0 as u64);
-            // let mut content = response.bytes().await.unwrap();
-            // let mut content = Bytes::new().chunks(end - start);
-            
-            // println!("mutex lock for file unwraped on thread start={}", start);
-            // let mut file = file.lock().await;  
-            // let mut content: Vec<&[u8]> = vec!(&Bytes::new());
-            
             let mut file = File::create(filename).await.unwrap();
             
             let mut progress: u64 = 0;
             pb.set_position(progress);
             
-            while let Some(b) = response.chunk().await.unwrap() {    
-                // let mut file = file.lock().await;  
-                // let progress = (end - start) as u64 / b.len() as u64;
+            while let Some(b) = response.chunk().await.unwrap() {
 
                 progress += b.len() as u64;
                 
-                // println!("writing on thr start={} (chunk.length={}, progress={} of {})",
-                //          start, b.len(), progress, (end - start));
-                
                 file.write(&b).await.unwrap();
                 file.flush().await.unwrap();
-                // drop(file);
                 pb.set_position(progress);
             };
-
-            // file.write_all(&mut content).await.unwrap();
-            
-            // println!("mutex lock for file dropped on thread start={}", start);
 
             drop(file);
             let mut count = task_count.lock().unwrap();
@@ -363,28 +549,14 @@ async fn download_chunk(
             drop(count);
             
             pb.finish_and_clear();
-            
-            // while response_chunk.is_some() {
-            //     // println!("Chunk: {:?}", chunk);
-            //     file.write_all(response_chunk.unwrap().chunks()).await;
-            //     pb.set_position(chunk);
-            // }
-
-            // pb.set_position(end as u64);
             return;
         }
 
-        Err(err) => {
-            eprintln!("Error downloading chunk: {:?}", err);
-            return;
+        Err(_) => {
+            eprintln!("Error downloading chunk: {:?} Trying again...", filename);
+            let _ = download_chunk(client, url, start, end, filename, pb, task_count);
         }
     }
-
-    // let mut count = task_count.lock().unwrap();
-    // *count -= 1;
-
-    // drop(count);
-    // pb.finish();
 
 }
 
@@ -405,14 +577,24 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
         return Err(format!("Invalid URL."));
     }
     
-    let client: reqwest::Client = reqwest::Client::new();
+    let clientbuilder = reqwest::ClientBuilder::new()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2311.135 Safari/537.36 Edge/12.246")
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .connect_timeout(Duration::from_secs(30))
+        .build();
+
+    if let Err(e) = clientbuilder {
+        return Err(format!("Could not create ClientBuilder object for connection initialization. {}", e));
+    }
+
+    let client = clientbuilder.unwrap();
 
     let response_future = client
         .get(url)
         .send()
         .await;
 
-    if let Err(e) = response_future {
+    if let Err(_) = response_future {
         return Err(format!("Connection refused."))
     };
 
@@ -472,8 +654,8 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
         let pb = ProgressBar::new(chunk_size as u64);
         let pb_styletry = ProgressStyle::default_bar()
             .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})");
-        if let Err(e) = pb_styletry {
-            return Err(format!("Could not set progress bar style"));
+        if let Err(_) = pb_styletry {
+            return Err(format!("Could not set progress bar style."));
         };
         
         pb.set_style(pb_styletry.unwrap().progress_chars("#>-"));
@@ -488,70 +670,30 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
         let task = tokio::spawn(
             download_chunk(client_, url_, start_, end, this_piece_filename, pb_, task_count_)
         );
-            // download_chunk(client_, url_, start_, end, file_, task_count_)
-        // );
 
         tasks.insert((start, end), task);
         index += 1;
-
-        // let response = client
-        //     .get(url)
-        //     .header("Range", format!("bytes={}-{}", start, end))
-        //     .send()
-        //     .await?;
-
-        // let mut content = response.bytes().await?;
-        // file.write_all(&mut content)
-        //     .await
-        //     .or(Err(format!("Could not write data stream to output file.")))?;
-
-        // pb.set_position(end as u64);
     }
 
-    for ((start, end), task) in tasks {
-        // println!("awaiting for task start={} end={}", start, end);
+    for (_, task) in tasks {
         let _running_task = task.await;
-        // println!("task start={} finished", start);
     }
 
     let pb = ProgressBar::new(pieces.len() as u64);
-    let pb_styletry = ProgressStyle::default_bar()
-            .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})");
-    if let Err(e) = pb_styletry {
-        return Err(format!("Could not set style for finishing progress bar. {}", e));
-    }
-    pb_styletry.unwrap().progress_chars("#>-");
 
-    // let pb_ = pb.clone();
-    pb.set_message("Finishing up");
+    println!("Finishing up");
     let pb_c = pb.clone();
     mpb.add(pb);
-
-    // let url_string = String::from(url);
-    // let url_vector = url_string.split('/').collect::<Vec<&str>>();
-    // let output_final_name = if url_string.chars().last().unwrap() == '/' {
-    //     url_vector.len().checked_sub(2).map(|i| url_vector[i]).unwrap()
-    // } else {
-    //     url_string.split('/').collect::<Vec<&str>>().last().copied().unwrap()
-    // };
     
     let output_file_try = std::fs::File::create(
         parse_filename_from_url(String::from(url))
     );
     if let Err(e) = output_file_try {
-        return Err(format!("Could not create final output file, does the running program has permission?"));
+        return Err(format!("Could not create final output file, does the running program has permission? {}", e));
     };
     let mut output_file = output_file_try.unwrap();
-
-    // let file = File::open(file_piece).await
-    //     .expect("File part not found, did you remove or delete them? Finishing process could not complete.");
-
-    let p__ = pieces.clone();
-    dbg!(p__);
     
-    for (index, (start_pos, file_piece)) in pieces.into_iter().enumerate() {
-        // let mut buf = Vec::with_capacity(64);
-
+    for (index, (_, file_piece)) in pieces.into_iter().enumerate() {
         let file_piece_clone = file_piece.clone();
         let file_piece_ = file_piece_clone.clone();
 
@@ -567,67 +709,22 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
         pb_c.set_position(pos);
         match status {
             Ok(_bytes) => {
-                // _println!("bytes copied: {}", bytes);
                 let this = file_piece_clone.clone();
                 if let Err(e) = std::fs::remove_file(this) {
-                    eprintln!("Could not remove file piece \"{}\" after successful output file finish step", file_piece_clone);
+                    return Err(
+                        format!("Could not remove file piece \"{}\" after successful output file finish step. {}",
+                                file_piece_clone,
+                                e
+                        )
+                    );
                 }
             },
-            Err(_e) => {
-                // eprintln!("error: {}", e);
+            Err(e) => {
+                return Err(format!("error: {}", e));
             }
         }
-        
-        // if let Ok(piece_file) = &mut piece_file_future {
-        //     // piece.read -> write(output)
-            
-        //     match piece_file.read(&mut buf).await {
-        //         Ok(bytes) => {
-        //             while bytes == buf.len() {
-        //                 match output_file.write(&buf).await {
-        //                     Ok(bytes) => {
-        //                         println!("wrote {} bytes to final file.", bytes);
-        //                     },
-        //                     Err(e) => {
-        //                         eprintln!("could not stream bytes to final file.");
-        //                     }
-        //                 }
-        //             }
-        //         },
-        //         Err(e) => {
-        //             eprintln!("Could not parse file piece/part data. {}", e);
-        //         }
-        //     }
-        // }
-        
-        // while let Ok(n) = output_file.read(&mut buf).await {
-        //     let piece_file = File::open(&file_piece_);
-        //     match &mut piece_file.await {
-        //         Ok(piece) => {
-        //             match piece.write(&buf).await {
-        //                 Ok(_) => {
-        //                     let pos = file_index as u64;
-        //                     pb_c.set_position(pos);
-        //                 },
-        //                 Err(e) => {
-        //                     eprintln!("Could not write file piece data to buffer.");
-        //                     eprintln!("{}", e);
-        //                 }
-        //             }
-        //         },
-        //         Err(e) => {
-        //             eprintln!("Could not retrieve data for file piece.");
-        //             eprintln!("{}", e);
-        //         }
-                
-        //     }
-        // }
-
     };
 
     pb_c.finish_and_clear();
-    // pb.finish();
-
-    // println!("File download completed.");
     Ok(())
 }

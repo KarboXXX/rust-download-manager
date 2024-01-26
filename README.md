@@ -14,11 +14,12 @@ O download é separado entre threads, cada thread com sua parte do download fina
 
 ![Downloading](https://i.imgur.com/6zRCzFl.png)
 ### Keybinds
-- <kbd>ESC</kbd>  Closes the program
-- <kbd>Ctrl</kbd> + <kbd>K</kbd>  Clears prompt
-- <kbd>Ctrl</kbd> + <kbd>C</kbd>  Closes the program
+- <kbd>ESC</kbd>  Closes the program.
+- <kbd>Ctrl</kbd> + <kbd>K</kbd>  Clears prompt.
+- <kbd>Ctrl</kbd> + <kbd>C</kbd>  Closes the program.
+- <kbd>Left Click</kbd>  Pastes the most recent item in the clipboard.
 ### Atalhos
-- <kbd>ESC</kbd>  Fecha o programa
-- <kbd>Ctrl</kbd> + <kbd>K</kbd>  Limpa o prompt (URL)
-- <kbd>Ctrl</kbd> + <kbd>C</kbd>  Fecha o programa
-
+- <kbd>ESC</kbd>  Fecha o programa.
+- <kbd>Ctrl</kbd> + <kbd>K</kbd>  Limpa o prompt (URL).
+- <kbd>Ctrl</kbd> + <kbd>C</kbd>  Fecha o programa.
+- <kbd>Botão Esquerdo</kbd>  Cola o item mais recente da área de transferência.
