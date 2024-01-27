@@ -1,0 +1,21 @@
+const socket = new WebSocket("ws://127.0.0.1:6969");
+
+if (typeof browser !== 'undefined') {
+    browser.webRequest.onBeforeRequest.addListener(
+        async (details) => {
+            if (details.method === "GET" && details.url.startsWith("http")) {
+                socket.send(details.url);
+            }
+        },
+        { urls: ["<all_urls>"] },
+        ["blocking"]
+    );  
+
+    console.log('Extension is running in Firefox');
+} else if (typeof chrome !== 'undefined') {
+    
+    console.log('Extension is running in Chromium-based browser');
+} else {
+  console.log('Extension is running in an unsupported environment');
+}
+

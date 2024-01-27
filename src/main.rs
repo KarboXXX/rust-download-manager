@@ -2,34 +2,30 @@
 #![allow(unused_braces)]
 #![warn(unused)]            
 
-// use env;
-
 use std::borrow::BorrowMut;
 use std::collections::HashMap;
 use std::io::{self, Write, Stdout, ErrorKind, Error};
-// use std::fs::{self, File, OpenOptions};
+use std::path::{Path, PathBuf};
 use std::{thread};
 use std::sync::{Arc, Mutex};
 use std::io::{stdout};
 use std::time::Duration;
-
-use tokio::{task::JoinHandle,
-            io::{AsyncWriteExt},
-            fs::File,
-            net::TcpListener
+use reqwest::header::{HeaderMap, CONTENT_TYPE, CONTENT_DISPOSITION};
+use tokio::{task::JoinHandle,  io::{AsyncWriteExt, AsyncRead, AsyncWrite},  fs::{File, self, remove_file},
+            net::{TcpListener, TcpStream, TcpSocket}
 };
-
+use tokio_tungstenite::{self, accept_async};
+use futures::{StreamExt, TryStreamExt};
 use clipboard::{self, ClipboardContext, ClipboardProvider};
-
 use reqwest;
 use is_url::is_url;
-
 use indicatif::{ProgressBar, MultiProgress, ProgressStyle};
-
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::cursor::{MoveTo};
-use crossterm::event::{self, poll, read, Event, KeyCode, KeyModifiers, EnableBracketedPaste, DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture};
+use crossterm::event::{self, poll, read, Event, KeyCode, KeyModifiers, EnableBracketedPaste,
+                       DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture};
 use crossterm::{QueueableCommand, ExecutableCommand};
+use directories::{UserDirs};
 
 #[derive(Default, Clone)]
 struct Prompt {
@@ -221,35 +217,6 @@ fn slice_from_start(s: String, n: usize) -> String {
     s.chars().into_iter().take(n).collect()
 }
 
-async fn handle_connection(stream: tokio::net::TcpStream) {
-    // let ws_stream = accept_async(stream).await.expect("Error during WebSocket handshake");
-    let mut outside_data_chunks: Vec<u8> = Vec::new();
-    while let Ok(_) = stream.readable().await {
-        let mut buf = Vec::with_capacity(4096);
-
-        match stream.try_read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                println!("read {} bytes", n);
-                outside_data_chunks.extend_from_slice(&mut buf);
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                continue;
-            }
-            Err(_e) => {
-                // return Err(e.into());
-            }
-        }
-    }
-
-    let data_str = String::from_utf8_lossy(&outside_data_chunks).to_string();
-
-    println!("\nURL: {}\n", data_str);
-    
-    // let (write, read) = ws_stream.split();
-    // let _result = tokio::spawn(tokio_tungstenite::tokio::io::copy(read, write)).await;
-}
-
 fn usage_message(error: bool) -> io::Result<()> {
     let command = std::env::args().into_iter().next().unwrap();
     println!("{} help - shows this message", command);
@@ -260,20 +227,87 @@ fn usage_message(error: bool) -> io::Result<()> {
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    let task_count = Arc::new(Mutex::new(0));
+
     if std::env::args().into_iter().len() > 1 {
-        println!("\n");
+        print!("\n");
         let argument = std::env::args().into_iter().nth(1).unwrap();
         if argument.contains("help") {
             return usage_message(false);
         } else if argument.contains("monitor") {
-            let listener = TcpListener::bind("127.0.0.1:6969").await.expect("Failed to bind");
-            println!("Server listening on 127.0.0.1:6969");
+            let address = "127.0.0.1:6969";
+            let listener = TcpListener::bind(address).await.expect("failed to bind to localhost");
+            
+            let ws_address = format!("ws://{address}");
+            println!("Server listening on {}", ws_address);
 
-            while let Ok((stream, _)) = listener.accept().await {
-                tokio::spawn(handle_connection(stream));
+            while let Ok((stream, address)) = listener.accept().await {
+                println!("connection established with peer address {address}");
+                match accept_async(stream).await {
+                    Ok(websocket) => {
+                        println!("websocket connected. listening for packets");
+                        let (sink, mut stream) = websocket.split();
+
+                        while let Some(reading) = stream.next().await {
+                            match reading {
+                                Ok(message) => {
+                                    let msg = message.clone();
+                                    if let Ok(packet) = message.into_text() {
+                                        if packet.contains("{|}") {
+                                            let splitted: Vec<&str> = packet.split("{|}").collect();
+                                            if splitted.len() == 2 {
+                                                let filename = splitted[1];
+                                                let url = splitted[0];
+                                                if is_url(url) {
+                                                    // println!("URL: {url}, Filename: {filename}");
+                                                    let file_path = filename;
+
+                                                    let task_c = Arc::clone(&task_count);
+                                                    thread::scope(|s| {
+                                                        s.spawn(|| {
+                                                            let download_try = download_file_in_pieces(url, task_c);
+                                                            match download_try {
+                                                                Ok(final_filename) => {
+                                                                    println!("Downloaded finished. {final_filename}");
+                                                                    let downloaded = Path::new(&final_filename);
+                                                                    let destination = Path::new(&file_path);
+                                                                    if let Err(e) = std::fs::rename(downloaded, destination) {
+                                                                        eprintln!("An error occurred when moving file to default Downloads folder. {e}");
+                                                                    }
+                                                                },
+                                                                Err(e) => {
+                                                                    eprintln!("ERROR: {e}");
+                                                                }
+                                                            }   
+                                                        });
+                                                    });
+                                                    
+                                                } else {
+                                                    println!("New well-formatted packet without valid url: {filename} in {url}");
+                                                }
+                                            } else {
+                                                println!("New packet with corret separator: {packet}");
+                                            }
+                                        } else {
+                                            println!("New packet: {msg}");
+                                        }
+                                    } else {
+                                        println!("A packet was received, but not on a text format.");
+                                    }
+                                },
+                                Err(e) => {
+                                    eprintln!("Failed to read message: {:?}", e);
+                                }
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("An error occurred: {:?}", e);
+                    }
+                }
             }
             
-            return Ok(())                
+            return Ok(())
         } else {
             return usage_message(true);
         }
@@ -309,7 +343,6 @@ async fn main() -> io::Result<()> {
     let mut download_results: DownloadResults = DownloadResults::default();
 
     let mut quit = false;
-    let task_count = Arc::new(Mutex::new(0));
 
     while !quit {
         let mut bar = bar_char.repeat(rendering.w as usize);
@@ -396,8 +429,7 @@ async fn main() -> io::Result<()> {
                             // dbg!(this_url.to_string(), this_url.to_string().len(), this_url.len());
 
                             let display_name = if this_url.len() > (rendering.w/2 + 20) as usize {
-                                let slice = slice_from_start(this_url.to_string(),
-                                                             this_url.len() - ((rendering.w/2) - 20) as usize);
+                                let slice = slice_from_start(this_url.to_string(), ((rendering.w/2) - 20) as usize);
                                 format!("{}...", slice)
                             } else {
                                 this_url.to_string()
@@ -418,9 +450,27 @@ async fn main() -> io::Result<()> {
                                         &this_url,
                                         task_count
                                     );
-                                    if let Ok(_) = download_try {
+                                    if let Ok(filename) = download_try {
                                         download_results.push(format!("{} finished", display_name));
                                         stdout.queue(Clear(ClearType::All)).unwrap();
+
+                                        if let Some(user_space) = UserDirs::new() {
+                                            if let Some(download_dir) = user_space.download_dir() {
+                                                let filename_ = filename.clone();
+                                                let file_final = Path::new(filename.as_str());
+                                                let mut destination = PathBuf::from(download_dir);
+                                                destination.push(filename_);
+
+                                                match std::fs::rename(file_final, destination.as_path()) {
+                                                    Ok(_) => {
+                                                        println!("Moved to default Downloads folder.");
+                                                    },
+                                                    Err(e) => {
+                                                        eprintln!("Error moving file to default Downloads folder. ERR: {e}");
+                                                    }
+                                                }
+                                            }                                            
+                                        }
                                         
                                         let message = String::from("Sucess. {} is complete.");
                                         stdout.queue(MoveTo(rendering.w/2 - (message.len() / 2) as u16, rendering.h/2)).unwrap();
@@ -572,7 +622,7 @@ fn parse_filename_from_url(url_string: String) -> String {
 
 #[tokio::main] 
 async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
-                                 -> Result<(), String> {
+                                 -> Result<String, String> {
     if !is_url(url) {
         return Err(format!("Invalid URL."));
     }
@@ -598,11 +648,58 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
         return Err(format!("Connection refused."))
     };
 
+    let parsed = parse_filename_from_url(String::from(url));
+    
     let response = response_future.unwrap();
+    if !response.status().is_success() {
+        return Err(format!("Response status of request is not sucess."));
+    }
 
+    let original_filename = if let Some(content_disposition) = response.headers().get(CONTENT_DISPOSITION) {
+        if let Ok(cd_str) = content_disposition.to_str() {
+            if let Some(filename) = cd_str.split("filename=").nth(1) {
+                println!("{filename}");
+                let filename = filename.trim().trim_matches('"');
+                String::from(filename)
+            } else {
+                if parsed.len() >= 20 {
+                    let pars = parsed.clone();
+                    let result = slice_from_start(pars, 20 - parsed.len());
+                    result
+                } else {
+                    parsed
+                }
+            }
+        } else {
+            if parsed.len() >= 20 {
+                let pars = parsed.clone();
+                slice_from_start(pars, 20 - parsed.len())
+            } else {
+                parsed
+            }
+        }
+    } else {
+        if parsed.len() >= 20 {
+            let pars = parsed.clone();
+            slice_from_start(pars, 20 - parsed.len())
+        } else {
+            parsed
+        }
+    };
+    
+    let content_type = if let Some(content_type) = response.headers().get(CONTENT_TYPE) {
+        if let Ok(content_type) = content_type.to_str() {
+            println!("{content_type}");
+            String::from(content_type)
+        } else {
+            String::from("")
+        }
+    } else {
+        String::from("")
+    };
+    
     let total_size: u64 = response.content_length().unwrap_or(0);
 
-    // let chunk_size: usize = (total_size / 3) as usize;
     let chunk_size: usize = if total_size > 1024 * 1024 * 40 {
         if total_size >= 1024 * 1024 * 1024 {
             (total_size / 6) as usize
@@ -612,23 +709,35 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
     } else {
         total_size as usize
     };
-    
-    // dbg!(total_size);
 
-    // let file = Arc::new(
-    //     tokio::sync::Mutex::new(
-    //         File::create(output)
-    //         .await
-    //         .expect("Error creating output file.")
-    //     )
-    // );
+    if &content_type == "application/octet-stream" {
+        let original_filename_ = original_filename.clone();
+        let output_file = File::create(original_filename_).await;
+        match output_file {
+            Ok(mut output) => {
+                match response.bytes().await {
+                    Ok(bytes) => {
+                        match tokio::io::copy(&mut bytes.as_ref(), &mut output).await {
+                            Ok(_bytes_read) => {
+                                return Ok(original_filename)
+                            },
+                            Err(e) => {
+                                return Err(format!("Could not read byte stream from 'octet-stream'. {e}"))
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        return Err(format!("No bytes received from byte-stream (octet-stream). {e}"))
+                    }
+                }
+            },
+            Err(e) => {
+                return Err(format!("Could not create output file. Application has permission? Free space? {e}"))
+            }
+        }
+    }
 
     let mpb = MultiProgress::new();
-
-    // let pb = ProgressBar::new(total_size);
-    // pb.set_style(ProgressStyle::default_bar()
-    //              .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")?
-    //              .progress_chars("#>-"));
 
     let mut tasks: HashMap<(u64, usize), JoinHandle<()>> = HashMap::new();
     let mut pieces: HashMap<u16, String> = HashMap::new();
@@ -638,7 +747,7 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
     drop(count);
 
     let mut index : u16 = 0;
-    let original_filename = parse_filename_from_url(String::from(url));
+    
     for start in (0..total_size).step_by(chunk_size) {
         let client_ = client.clone();
         let url_ = url.to_string();
@@ -684,9 +793,11 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
     println!("Finishing up");
     let pb_c = pb.clone();
     mpb.add(pb);
-    
+
+    let final_filename_ = parse_filename_from_url(String::from(url));
+    let final_filename = final_filename_.clone();
     let output_file_try = std::fs::File::create(
-        parse_filename_from_url(String::from(url))
+        final_filename_
     );
     if let Err(e) = output_file_try {
         return Err(format!("Could not create final output file, does the running program has permission? {}", e));
@@ -704,7 +815,7 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
         
         let mut input = piece_file_future.unwrap();
         let status = io::copy(&mut input, &mut output_file);
-
+        
         let pos = index as u64;
         pb_c.set_position(pos);
         match status {
@@ -726,5 +837,5 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
     };
 
     pb_c.finish_and_clear();
-    Ok(())
+    Ok(final_filename)
 }
