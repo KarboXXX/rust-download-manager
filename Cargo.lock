@@ -797,6 +797,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "karbox_downloader"
+version = "0.1.1"
+dependencies = [
+ "clipboard",
+ "crossterm",
+ "directories",
+ "futures 0.3.30",
+ "futures-util",
+ "indicatif",
+ "is-url",
+ "reqwest",
+ "tokio",
+ "tokio-tungstenite",
+ "websocket",
+]
+
+[[package]]
 name = "kernel32-sys"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1727,23 +1744,6 @@ dependencies = [
  "redox_syscall 0.4.1",
  "rustix",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "terminal_download"
-version = "0.1.0"
-dependencies = [
- "clipboard",
- "crossterm",
- "directories",
- "futures 0.3.30",
- "futures-util",
- "indicatif",
- "is-url",
- "reqwest",
- "tokio",
- "tokio-tungstenite",
- "websocket",
 ]
 
 [[package]]
