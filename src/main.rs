@@ -272,7 +272,7 @@ async fn main() -> io::Result<()> {
                                                                     let downloaded = Path::new(&final_filename);
                                                                     let destination = Path::new(&file_path);
                                                                     if let Err(e) = std::fs::rename(downloaded, destination) {
-                                                                        eprintln!("An error occurred when moving file to default Downloads folder. {e}");
+                                                                        eprintln!("An error occurred when moving file to default Downloads folder. {e} downloaded: {:?}, destination: {:?}", downloaded, destination);
                                                                     }
                                                                 },
                                                                 Err(e) => {
@@ -564,6 +564,7 @@ async fn main() -> io::Result<()> {
 async fn download_chunk(
     client: reqwest::Client,
     url: String,
+    content_type: String,
     start: usize,
     end: usize,
     filename: String,
@@ -584,7 +585,6 @@ async fn download_chunk(
             pb.set_position(progress);
             
             while let Some(b) = response.chunk().await.unwrap() {
-
                 progress += b.len() as u64;
                 
                 file.write(&b).await.unwrap();
@@ -604,7 +604,7 @@ async fn download_chunk(
 
         Err(_) => {
             eprintln!("Error downloading chunk: {:?} Trying again...", filename);
-            let _ = download_chunk(client, url, start, end, filename, pb, task_count);
+            let _ = download_chunk(client, url, content_type, start, end, filename, pb, task_count);
         }
     }
 
@@ -710,32 +710,32 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
         total_size as usize
     };
 
-    if &content_type == "application/octet-stream" {
-        let original_filename_ = original_filename.clone();
-        let output_file = File::create(original_filename_).await;
-        match output_file {
-            Ok(mut output) => {
-                match response.bytes().await {
-                    Ok(bytes) => {
-                        match tokio::io::copy(&mut bytes.as_ref(), &mut output).await {
-                            Ok(_bytes_read) => {
-                                return Ok(original_filename)
-                            },
-                            Err(e) => {
-                                return Err(format!("Could not read byte stream from 'octet-stream'. {e}"))
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        return Err(format!("No bytes received from byte-stream (octet-stream). {e}"))
-                    }
-                }
-            },
-            Err(e) => {
-                return Err(format!("Could not create output file. Application has permission? Free space? {e}"))
-            }
-        }
-    }
+    // if &content_type == "application/octet-stream" {
+    //     let original_filename_ = original_filename.clone();
+    //     let output_file = File::create(original_filename_).await;
+    //     match output_file {
+    //         Ok(mut output) => {
+    //             match response.bytes().await {
+    //                 Ok(bytes) => {
+    //                     match tokio::io::copy(&mut bytes.as_ref(), &mut output).await {
+    //                         Ok(_bytes_read) => {
+    //                             return Ok(original_filename)
+    //                         },
+    //                         Err(e) => {
+    //                             return Err(format!("Could not read byte stream from 'octet-stream'. {e}"))
+    //                         }
+    //                     }
+    //                 },
+    //                 Err(e) => {
+    //                     return Err(format!("No bytes received from byte-stream (octet-stream). {e}"))
+    //                 }
+    //             }
+    //         },
+    //         Err(e) => {
+    //             return Err(format!("Could not create output file. Application has permission? Free space? {e}"))
+    //         }
+    //     }
+    // }
 
     let mpb = MultiProgress::new();
 
@@ -772,12 +772,15 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
         let pb_ = pb.clone();
         mpb.add(pb);
 
-        let this_piece_filename_string = format!("{}.part{}", original_filename, start);
+        let this_piece_filename_string = format!("{original_filename}.part{start}");
+        
         let this_piece_filename = this_piece_filename_string.clone();
         pieces.insert(index, this_piece_filename_string);
         
+        let ct = content_type.clone();
+        
         let task = tokio::spawn(
-            download_chunk(client_, url_, start_, end, this_piece_filename, pb_, task_count_)
+            download_chunk(client_, url_, ct, start_, end, this_piece_filename, pb_, task_count_)
         );
 
         tasks.insert((start, end), task);
@@ -794,14 +797,15 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
     let pb_c = pb.clone();
     mpb.add(pb);
 
-    let final_filename_ = parse_filename_from_url(String::from(url));
+    let mut final_filename_ = rename_index_filename(original_filename.as_str());
+    
     let final_filename = final_filename_.clone();
-    let output_file_try = std::fs::File::create(
-        final_filename_
-    );
+    let output_file_try = std::fs::File::create(final_filename_);
+    
     if let Err(e) = output_file_try {
         return Err(format!("Could not create final output file, does the running program has permission? {}", e));
     };
+    
     let mut output_file = output_file_try.unwrap();
     
     for (index, (_, file_piece)) in pieces.into_iter().enumerate() {
@@ -838,4 +842,52 @@ async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
 
     pb_c.finish_and_clear();
     Ok(final_filename)
+}
+
+fn rename_index_filename(filename: &str) -> String {
+    // let mut new_filename = filename.to_string();
+    let mut new_filename = if let Some(user_space) = UserDirs::new() {
+        if let Some(download_dir) = user_space.download_dir() {
+            let mut p = PathBuf::from(download_dir);
+            p.push(filename);
+            p.as_path().to_str().unwrap().to_string()
+        } else {
+            filename.to_string()
+        }
+    } else {
+        filename.to_string()
+    };
+    
+    let mut index = 1;
+
+    while std::fs::metadata(&new_filename).is_ok() {
+        let parts: Vec<&str> = filename.rsplitn(2, '.').collect();
+        // let p = parts.clone();
+        // dbg!(p);
+        let (base_name, extension) = if parts.len() == 2 {
+            (parts[1], parts[0])
+        } else {
+            ("", parts[0])
+        };
+        
+        // new_filename = format!("{}({}).{}", base_name, index, extension);
+        new_filename = if let Some(user_space) = UserDirs::new() {
+            if let Some(download_dir) = user_space.download_dir() {
+                let mut p = PathBuf::from(download_dir);
+                let n = format!("{}({}).{}", base_name, index, extension);
+                p.push(n);
+                p.as_path().to_str().unwrap().to_string()
+            } else {
+                format!("{}({}).{}", base_name, index, extension)
+            }
+        } else {
+            format!("{}({}).{}", base_name, index, extension)
+        };
+        
+        index += 1;
+        // let n = new_filename.clone();
+        // dbg!(index, base_name, extension, n);
+    }
+
+    new_filename
 }

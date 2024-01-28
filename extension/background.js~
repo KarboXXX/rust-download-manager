@@ -1,16 +1,41 @@
-const socket = new WebSocket("ws://127.0.0.1:6969");
+let socket;
 
 if (typeof browser !== 'undefined') {
-    browser.webRequest.onBeforeRequest.addListener(
-        async (details) => {
-            if (details.method === "GET" && details.url.startsWith("http")) {
-                socket.send(details.url);
-            }
-        },
-        { urls: ["<all_urls>"] },
-        ["blocking"]
-    );  
+    function try_websocket_connection() {
+        if (!socket || socket.readyState === WebSocket.CLOSED) {
+            socket = new WebSocket("ws://127.0.0.1:6969");
+            socket.onopen = function(event) {
+                console.log("websocket connection opened");
+                socket.send("Web Monitoring Connected.");
 
+                browser.downloads.onCreated.addListener(async (downloaded_item) => {
+                    // console.log(downloaded_item.url);
+                    let formatted = downloaded_item.url + "{|}" + downloaded_item.filename;
+                    socket.send(formatted);
+                    
+                    browser.downloads.cancel(downloaded_item.id);
+                    browser.downloads.erase({id: downloaded_item.id});
+                    
+                });
+                
+                // browser.webRequest.onBeforeRequest.addListener(
+                //     async (details) => {
+                //         if (details.method === "GET" && details.url.startsWith("http")) {
+                //             socket.send(details.url);
+                //         }
+                //     },
+                //     { urls: ["<all_urls>"] },
+                //     ["blocking"]
+                // );
+            };
+
+            socket.onerror = function(event) {
+                console.error("Websocket error:", event);
+            };
+        }
+    }
+
+    setInterval(try_websocket_connection, 20 * 1000) // every 20 seconds.
     console.log('Extension is running in Firefox');
 } else if (typeof chrome !== 'undefined') {
     

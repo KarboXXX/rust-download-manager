@@ -2,7 +2,7 @@ let socket;
 
 if (typeof browser !== 'undefined') {
     function try_websocket_connection() {
-        if (!socket || socket.readyState === WebSocket.CLOSED) {
+        if (!socket || socket.readyState != WebSocket.OPEN) {
             socket = new WebSocket("ws://127.0.0.1:6969");
             socket.onopen = function(event) {
                 console.log("websocket connection opened");
@@ -12,7 +12,7 @@ if (typeof browser !== 'undefined') {
                     // console.log(downloaded_item.url);
                     let formatted = downloaded_item.url + "{|}" + downloaded_item.filename;
                     socket.send(formatted);
-                    
+                    console.log('sending socket:', formatted);
                     browser.downloads.cancel(downloaded_item.id);
                     browser.downloads.erase({id: downloaded_item.id});
                     
@@ -31,11 +31,18 @@ if (typeof browser !== 'undefined') {
 
             socket.onerror = function(event) {
                 console.error("Websocket error:", event);
+                return;
             };
+
+            socket.onclose = function(event) {
+                console.info("Websocket connection closed.");
+                socket = undefined;
+                return;
+            }
         }
     }
 
-    setInterval(try_websocket_connection, 20 * 1000) // every 20 seconds.
+    if (!socket || socket.readyState === WebSocket.CLOSED) setInterval(try_websocket_connection, 20 * 1000) // every 20 seconds.
     console.log('Extension is running in Firefox');
 } else if (typeof chrome !== 'undefined') {
     

@@ -6,6 +6,7 @@
         "webRequest",
         "webRequestBlocking",
         "activeTab",
+        "cookies",
         "downloads",
         "downloads.open",
         "http://*/",
