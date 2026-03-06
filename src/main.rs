@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::{thread};
 use std::sync::{Arc, Mutex};
 use std::io::{stdout};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::{net::{TcpListener}};
 use tokio_tungstenite::{self, accept_async};
 use futures::{StreamExt};
@@ -61,70 +61,75 @@ async fn main() -> io::Result<()> {
 
             while let Ok((stream, address)) = listener.accept().await {
                 println!("connection established with peer address {address}");
-                match accept_async(stream).await {
-                    Ok(websocket) => {
-                        println!("websocket connected. listening for packets");
-                        let (_sink, mut stream) = websocket.split();
+                let async_stream = accept_async(stream).await;
+                
+                if let Err(err) = async_stream {
+                    eprintln!("An error occurred: {:?}", err);
+                    continue;
+                }
 
-                        while let Some(reading) = stream.next().await {
-                            match reading {
-                                Ok(message) => {
-                                    let msg = message.clone();
-                                    if let Ok(packet) = message.into_text() {
-                                        if packet.contains("{|}") {
-                                            let splitted: Vec<&str> = packet.split("{|}").collect();
-                                            if splitted.len() == 2 {
-                                                let filename = splitted[1];
-                                                let url = splitted[0];
-                                                if is_url(url) {
-                                                    // println!("URL: {url}, Filename: {filename}");
-                                                    let file_path = filename;
+                let websocket = async_stream.unwrap();                
+                println!("websocket connected. listening for packets");
+                let (_sink, mut stream) = websocket.split();
+                
+                while let Some(reading) = stream.next().await {
+                    if let Err(err) = reading {
+                        eprintln!("Failed to read message: {:?}", err);
+                        continue;
+                    }
 
-                                                    let task_c = Arc::clone(&task_count);
-                                                    thread::scope(|s| {
-                                                        s.spawn(|| {
-                                                            let download_try = download_file_in_pieces(url, task_c);
-                                                            match download_try {
-                                                                Ok(final_filename) => {
-                                                                    println!("Downloaded finished. {final_filename}");
-                                                                    let downloaded = Path::new(&final_filename);
-                                                                    let destination = Path::new(&file_path);
-                                                                    if let Err(e) = std::fs::rename(downloaded, destination) {
-                                                                        eprintln!("An error occurred when moving file to default Downloads folder. {e} downloaded: {:?}, destination: {:?}", downloaded, destination);
-                                                                    }
-                                                                },
-                                                                Err(e) => {
-                                                                    eprintln!("ERROR: {e}");
-                                                                }
-                                                            }   
-                                                        });
-                                                    });
-                                                    
-                                                } else {
-                                                    println!("New well-formatted packet without valid url: {filename} in {url}");
-                                                }
-                                            } else {
-                                                println!("New packet with corret separator: {packet}");
-                                            }
-                                        } else {
-                                            println!("New packet: {msg}");
-                                        }
-                                    } else {
-                                        println!("A packet was received, but not on a text format.");
+                    let message = reading.unwrap();
+                    let msg = message.clone();
+                    let message_text = message.into_text();
+                    
+                    if let Err(packet) = message_text {
+                        println!("A packet was received, but not on a text format. {packet}");
+                        continue;
+                    }
+                    
+                    let packet = message_text.unwrap();
+
+                    if !packet.contains("{|}") {
+                        println!("Packet does not contain correct separators");
+                        continue;
+                    }
+                    
+                    let splitted: Vec<&str> = packet.split("{|}").collect();
+                    if splitted.len() != 2 {
+                        println!("New packet: {msg}");
+                        continue;
+                    }
+                    let filename = splitted[1];
+                    let url = splitted[0];
+                    
+                    if is_url(url) {
+                        println!("New packet with correct separator: {packet}");
+                        continue;
+                    }
+                    // println!("URL: {url}, Filename: {filename}");
+                    let file_path = filename;
+
+                    let task_c = Arc::clone(&task_count);
+                    thread::scope(|s| {
+                        s.spawn(|| {
+                            let download_try = download_file_in_pieces(url, task_c);
+                            match download_try {
+                                Ok(final_filename) => {
+                                    println!("Downloaded finished. {final_filename}");
+                                    let downloaded = Path::new(&final_filename);
+                                    let destination = Path::new(&file_path);
+                                    if let Err(e) = std::fs::rename(downloaded, destination) {
+                                        eprintln!("An error occurred when moving file to default Downloads folder. {e} downloaded: {:?}, destination: {:?}", downloaded, destination);
                                     }
                                 },
                                 Err(e) => {
-                                    eprintln!("Failed to read message: {:?}", e);
+                                    eprintln!("ERROR: {e}");
                                 }
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        eprintln!("An error occurred: {:?}", e);
-                    }
+                            }   
+                        });
+                    }); 
                 }
             }
-            
             return Ok(())
         } else {
             return usage_message(true);
@@ -132,7 +137,6 @@ async fn main() -> io::Result<()> {
     };
     
     let mut stdout = stdout();
-
     let mut prompt = Prompt::default();
     
     let _ = terminal::enable_raw_mode().unwrap();
@@ -264,12 +268,14 @@ async fn main() -> io::Result<()> {
                             
                             thread::scope(|s| {
                                 s.spawn(|| {
+                                    let start_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
                                     let download_try = download_file_in_pieces(
                                         &this_url,
                                         task_count
                                     );
                                     if let Ok(filename) = download_try {
-                                        download_results.push(format!("{} finished", display_name));
+                                        let finished_timestamp: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - start_timestamp;
+                                        download_results.push(format!("{display_name} finished in {finished_timestamp}s"));
                                         stdout.queue(Clear(ClearType::All)).unwrap();
 
                                         if let Some(user_space) = UserDirs::new() {

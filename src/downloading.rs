@@ -10,7 +10,8 @@ use std::path::{PathBuf};
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use reqwest::header::{CONTENT_TYPE, CONTENT_DISPOSITION};
-use tokio::{task::JoinHandle,  io::{AsyncWriteExt,},  fs::{File}};
+use tokio::task::JoinSet;
+use tokio::{io::{AsyncWriteExt,}, fs::{File}};
 use reqwest;
 use is_url::is_url;
 use indicatif::{ProgressBar, MultiProgress, ProgressStyle};
@@ -157,7 +158,7 @@ pub async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
 
     let chunk_size: usize = if total_size > 1024 * 1024 * 40 {
         if total_size >= 1024 * 1024 * 1024 {
-            (total_size / 6) as usize
+            (total_size / 5) as usize
         } else {
             (total_size / 3) as usize
         }
@@ -165,55 +166,19 @@ pub async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
         total_size as usize
     };
 
-    // if &content_type == "application/octet-stream" {
-    //     let original_filename_ = original_filename.clone();
-    //     let output_file = File::create(original_filename_).await;
-    //     match output_file {
-    //         Ok(mut output) => {
-    //             match response.bytes().await {
-    //                 Ok(bytes) => {
-    //                     match tokio::io::copy(&mut bytes.as_ref(), &mut output).await {
-    //                         Ok(_bytes_read) => {
-    //                             return Ok(original_filename)
-    //                         },
-    //                         Err(e) => {
-    //                             return Err(format!("Could not read byte stream from 'octet-stream'. {e}"))
-    //                         }
-    //                     }
-    //                 },
-    //                 Err(e) => {
-    //                     return Err(format!("No bytes received from byte-stream (octet-stream). {e}"))
-    //                 }
-    //             }
-    //         },
-    //         Err(e) => {
-    //             return Err(format!("Could not create output file. Application has permission? Free space? {e}"))
-    //         }
-    //     }
-    // }
-
     let mpb = MultiProgress::new();
 
-    let mut tasks: HashMap<(u64, usize), JoinHandle<()>> = HashMap::new();
-    let mut pieces: HashMap<u16, String> = HashMap::new();
-    
+    let mut pieces: HashMap<u16, String> = HashMap::new();    
+    let mut index : u16 = 0;
+    let mut set = JoinSet::new();
+
+    // ensure no overlocking this mutex by setting the counter and dropping the mutex key
     let mut count = task_count.lock().unwrap();
     *count += ((total_size + (chunk_size as u64) - 1) / chunk_size as u64) as usize;
     drop(count);
-
-    let mut index : u16 = 0;
     
     for start in (0..total_size).step_by(chunk_size) {
-        let client_ = client.clone();
-        let url_ = url.to_string();
-        // let file_ = file.clone();
-        // let pb_ = pb.clone();
-        let start_ = start.clone() as usize;
-        let task_count_ = Arc::clone(&task_count);
-
         let end = usize::min((start as usize) + chunk_size, total_size as usize) - 1;
-
-        // println!("progressbar size={} for thread start={}", chunk_size, start);
 
         let pb = ProgressBar::new(chunk_size as u64);
         let pb_styletry = ProgressStyle::default_bar()
@@ -233,17 +198,29 @@ pub async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
         pieces.insert(index, this_piece_filename_string);
         
         let ct = content_type.clone();
-        
-        let task = tokio::spawn(
-            download_chunk(client_, url_, ct, start_, end, this_piece_filename, pb_, task_count_)
-        );
 
-        tasks.insert((start, end), task);
+        let client_ = client.clone();
+        let url_ = url.to_string();
+        let start_ = start.clone() as usize;
+        let task_count_ = Arc::clone(&task_count);
+        set.spawn(async move {
+            return download_chunk(client_, url_, ct, start_, end, this_piece_filename, pb_, task_count_).await;
+        });
+
         index += 1;
     }
 
-    for (_, task) in tasks {
-        let _running_task = task.await;
+    // let mut results = Vec::new();
+    while let Some(task) = set.join_next().await {
+        match task {
+            Err(err) => {
+                set.abort_all();
+                return Err(format!("Threads panicked. {err}"))
+            }
+            Ok(_val) => {
+                // results.push(_val);
+            }
+        }
     }
 
     let pb = ProgressBar::new(pieces.len() as u64);
@@ -264,10 +241,7 @@ pub async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
     let mut output_file = output_file_try.unwrap();
     
     for (index, (_, file_piece)) in pieces.into_iter().enumerate() {
-        let file_piece_clone = file_piece.clone();
-        let file_piece_ = file_piece_clone.clone();
-
-        let piece_file_future = std::fs::File::open(&file_piece_);
+        let piece_file_future = std::fs::File::open(&file_piece);
         if let Err(e) = piece_file_future {
             return Err(format!("Could not open file part. {}", e));
         };
@@ -279,18 +253,17 @@ pub async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
         pb_c.set_position(pos);
         match status {
             Ok(_bytes) => {
-                let this = file_piece_clone.clone();
-                if let Err(e) = std::fs::remove_file(this) {
+                if let Err(e) = std::fs::remove_file(&file_piece) {
                     return Err(
                         format!("Could not remove file piece \"{}\" after successful output file finish step. {}",
-                                file_piece_clone,
+                                &file_piece,
                                 e
                         )
                     );
                 }
             },
             Err(e) => {
-                return Err(format!("error: {}", e));
+                return Err(format!("i/o error: {}", e));
             }
         }
     };
