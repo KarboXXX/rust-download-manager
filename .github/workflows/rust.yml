@@ -19,6 +19,6 @@ jobs:
     - name: Rustup update
       run: rustup update
     - name: Build
-      run: cargo build --release --verbose
+      run: cargo build --target x86_64-unknown-linux-gnu --release --verbose
     - name: Run tests
       run: cargo test --verbose
