@@ -32,9 +32,10 @@ async function registerDownload(downloadItem: browser.Downloads.DownloadItem) {
     };
     console.debug(downloadItem);
     ws.send(JSON.stringify(json_download_data));
+    
+    browser.downloads.cancel(downloadItem.id);
   }
   
-  browser.downloads.cancel(downloadItem.id);
   // browser.downloads.erase({ id: downloadItem.id });
 };
 

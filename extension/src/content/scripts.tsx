@@ -1,7 +1,9 @@
-import createContentApp from './ContentApp.ts'
+import ReactDOM from 'react-dom/client'
+import ContentApp from './ContentApp'
 import './styles.css'
 
 export default function initial() {
+  console.log('Hello from content script')
   const rootDiv = document.createElement('div')
   rootDiv.setAttribute('data-extension-root', 'true')
   document.body.appendChild(rootDiv)
@@ -15,11 +17,15 @@ export default function initial() {
   shadowRoot.appendChild(styleElement)
   fetchCSS().then((response) => (styleElement.textContent = response))
 
-  // Render ContentApp inside shadow root
-  const container = createContentApp()
-  shadowRoot.appendChild(container)
-
+  // Create a container for React to render into
+  const mountingPoint = ReactDOM.createRoot(shadowRoot)
+  mountingPoint.render(
+    <div className="content_script">
+      <ContentApp />
+    </div>
+  )
   return () => {
+    mountingPoint.unmount()
     rootDiv.remove()
   }
 }
