@@ -1,6 +1,6 @@
 import ReactDOM from 'react-dom/client'
 import ContentApp from './ContentApp'
-import './styles.css'
+// import './styles.css'
 
 export default function initial() {
   console.log('Hello from content script')

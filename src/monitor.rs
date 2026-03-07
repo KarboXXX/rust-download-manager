@@ -1,9 +1,9 @@
 use std::{path::Path, sync::{Arc, Mutex}, thread};
 
-use futures::{StreamExt, io};
+use futures::{SinkExt, StreamExt, io};
 use serde_json::Value;
 use tokio::net::TcpListener;
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 use crate::downloading::download_file_in_pieces;
 
@@ -27,7 +27,7 @@ pub async fn monitor() -> io::Result<()> {
 
         let websocket = async_stream.unwrap();
         println!("websocket connected. listening for packets");
-        let (_sink, mut stream) = websocket.split();
+        let (mut sink, mut stream) = websocket.split();
         
         while let Some(reading) = stream.next().await {
             if let Err(err) = reading {
@@ -54,6 +54,13 @@ pub async fn monitor() -> io::Result<()> {
             let parsed = json.unwrap();
 
             let Some(event) = parsed["event"].as_str() else { continue };
+            if event != "download_created" {
+                // sidebar events
+                println!("sidebar event dispatched '{event}'.");
+                let _ = sink.send(Message::text(format!("PONG! --> {}", event))).await;
+                continue;
+            }
+            
             let Some(url) = parsed["url"].as_str() else { continue };
             let Some(id) = parsed["id"].as_u64() else { continue };
             let Some(mime) = parsed["mime"].as_str() else { continue };
