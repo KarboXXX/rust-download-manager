@@ -5,9 +5,11 @@
 mod downloading;
 mod interaction;
 mod rendering;
+mod monitor;
 use downloading::{download_file_in_pieces};
 use interaction::{Prompt, DownloadResults};
 use rendering::{RenderingManager};
+use monitor::monitor;
 
 use std::io::{self, Write, ErrorKind, Error};
 use std::path::{Path, PathBuf};
@@ -35,106 +37,31 @@ fn slice_from_start(s: String, n: usize) -> String {
     s.chars().into_iter().take(n).collect()
 }
 
-fn usage_message(error: bool) -> io::Result<()> {
+fn usage_message() -> io::Result<()> {
     let command = std::env::args().into_iter().next().unwrap();
     println!("{} help - shows this message", command);
     println!("{} monitor - enter monitor mode and wait for downloads from your browser.\n", command);
 
-    if error {return Err(std::io::Error::new(ErrorKind::Other, "invalid command"))} else {return Ok(())};
+    return Ok(());
 }
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let task_count = Arc::new(Mutex::new(0));
-
     if std::env::args().into_iter().len() > 1 {
         print!("\n");
         let argument = std::env::args().into_iter().nth(1).unwrap();
         if argument.contains("help") {
-            return usage_message(false);
-        } else if argument.contains("monitor") {
-            let address = "127.0.0.1:6969";
-            let listener = TcpListener::bind(address).await.expect("failed to bind to localhost");
-            
-            let ws_address = format!("ws://{address}");
-            println!("Server listening on {}", ws_address);
-
-            while let Ok((stream, address)) = listener.accept().await {
-                println!("connection established with peer address {address}");
-                let async_stream = accept_async(stream).await;
-                
-                if let Err(err) = async_stream {
-                    eprintln!("An error occurred: {:?}", err);
-                    continue;
-                }
-
-                let websocket = async_stream.unwrap();                
-                println!("websocket connected. listening for packets");
-                let (_sink, mut stream) = websocket.split();
-                
-                while let Some(reading) = stream.next().await {
-                    if let Err(err) = reading {
-                        eprintln!("Failed to read message: {:?}", err);
-                        continue;
-                    }
-
-                    let message = reading.unwrap();
-                    let msg = message.clone();
-                    let message_text = message.into_text();
-                    
-                    if let Err(packet) = message_text {
-                        println!("A packet was received, but not on a text format. {packet}");
-                        continue;
-                    }
-                    
-                    let packet = message_text.unwrap();
-
-                    if !packet.contains("{|}") {
-                        println!("Packet does not contain correct separators");
-                        continue;
-                    }
-                    
-                    let splitted: Vec<&str> = packet.split("{|}").collect();
-                    if splitted.len() != 2 {
-                        println!("New packet: {msg}");
-                        continue;
-                    }
-                    let filename = splitted[1];
-                    let url = splitted[0];
-                    
-                    if is_url(url) {
-                        println!("New packet with correct separator: {packet}");
-                        continue;
-                    }
-                    // println!("URL: {url}, Filename: {filename}");
-                    let file_path = filename;
-
-                    let task_c = Arc::clone(&task_count);
-                    thread::scope(|s| {
-                        s.spawn(|| {
-                            let download_try = download_file_in_pieces(url, task_c);
-                            match download_try {
-                                Ok(final_filename) => {
-                                    println!("Downloaded finished. {final_filename}");
-                                    let downloaded = Path::new(&final_filename);
-                                    let destination = Path::new(&file_path);
-                                    if let Err(e) = std::fs::rename(downloaded, destination) {
-                                        eprintln!("An error occurred when moving file to default Downloads folder. {e} downloaded: {:?}, destination: {:?}", downloaded, destination);
-                                    }
-                                },
-                                Err(e) => {
-                                    eprintln!("ERROR: {e}");
-                                }
-                            }   
-                        });
-                    }); 
-                }
-            }
+            let _ = usage_message();
             return Ok(())
+        } else if argument.contains("monitor") {
+            return monitor().await;
         } else {
-            return usage_message(true);
+            let _ = usage_message();
+            return Ok(())
         }
     };
+
+    let task_count = Arc::new(Mutex::new(0));
     
     let mut stdout = stdout();
     let mut prompt = Prompt::default();
@@ -142,7 +69,7 @@ async fn main() -> io::Result<()> {
     let _ = terminal::enable_raw_mode().unwrap();
     if let Err(r) = stdout.execute(EnableBracketedPaste) {
         eprintln!("Your terminal does not support bracket paste. {:?}", r);
-        return Err(Error::new(ErrorKind::Other, format!("{:?}", r)));
+        return Err(r);
     }
 
     let is_mouse_capture_enabled: bool = if let Err(_) = stdout.execute(EnableMouseCapture) { false } else { true };
@@ -199,7 +126,7 @@ async fn main() -> io::Result<()> {
                         _ => {}
                     };
                     // prompt.insert_str(&data)
-                    // return Ok(())
+                    return Ok(())
                 },
                 Event::Key(event) => {
                     let key = event.code;
@@ -368,7 +295,7 @@ async fn main() -> io::Result<()> {
         if let Some(y) = rendering.h.checked_sub(1) {
             let x = 0;
             if let Some(w) = rendering.w.checked_sub(1) {
-                prompt.sync_terminal_cursor(&mut stdout, x, y as usize, w as usize)?;
+                prompt.sync_terminal_cursor(&mut stdout, x, y as usize, w as usize);
             }
         }
         
