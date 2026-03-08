@@ -7,15 +7,31 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
+  linux:
     runs-on: ubuntu-latest
     steps:
       - run: sudo apt update && sudo apt install -y libxcb-xfixes0-dev libxcb1-dev
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v5
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-      - uses: actions-rs/cargo@v1
+      - run: make linux
+  windows:
+    runs-on: ubuntu-latest
+    steps:
+      - run: sudo apt update && sudo apt install -y libxcb-xfixes0-dev libxcb1-dev binutils-mingw-w64-x86-64 gcc-mingw-w64-x86-64
+      - uses: actions/checkout@v5
+      - uses: actions-rs/toolchain@v1
         with:
-          command: build
-          args: --release --all-features
+          toolchain: stable
+          target: x86_64-pc-windows-gnu
+        
+      - run: make windows
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 25.7
+      - uses: actions/checkout@v5
+      - run: make extension
