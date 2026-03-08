@@ -11,16 +11,12 @@ use interaction::{Prompt, DownloadResults};
 use rendering::{RenderingManager};
 use monitor::monitor;
 
-use std::io::{self, Write, ErrorKind, Error};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::{thread};
 use std::sync::{Arc, Mutex};
 use std::io::{stdout};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::{net::{TcpListener}};
-use tokio_tungstenite::{self, accept_async};
-use futures::{StreamExt};
-use is_url::is_url;
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::cursor::{MoveTo};
 use crossterm::event::{self, poll, read, Event, KeyCode, KeyModifiers, EnableBracketedPaste,
@@ -299,7 +295,7 @@ async fn main() -> io::Result<()> {
         if let Some(y) = rendering.h.checked_sub(1) {
             let x = 0;
             if let Some(w) = rendering.w.checked_sub(1) {
-                prompt.sync_terminal_cursor(&mut stdout, x, y as usize, w as usize);
+                let _ = prompt.sync_terminal_cursor(&mut stdout, x, y as usize, w as usize);
             }
         }
         
