@@ -1,54 +1,142 @@
 import { useState, useEffect } from 'react';
-import iconUrl from '../images/icon.png';
+import logo from '../images/rust.png';
 import "./styles.css"
 
 // Type for configuration sent to service worker
 interface DownloadConfig {
-  filenamePattern: string;
-  downloadFolder: string;
+  total_threads: number,
+  download_threads_max: number,
+  download_threads_min: number,
+  download: string,
 }
 
 const SidebarApp = () => {
-  const [filename, setFilename] = useState('');
-  const [folder, setFolder] = useState('');
-  const [status, setStatus] = useState('');
+  const [total_threads, setTotal] = useState(0);
+  const [minTh, setMinTh] = useState(0);
+  const [maxTh, setMaxTh] = useState(0);
+  const [folder, setFolder] = useState("");
+  const [statusText, setStatusText] = useState("");
+
+  function statusLabel() {
+    useEffect(() => {
+      setTimeout(() => {
+        setStatusText("")
+      }, 5000)
+    }, [statusText])
+
+    return (<div className='status'>{statusText}</div>)
+  }
+
+  function setConfig(config: DownloadConfig) {
+    setFolder(config.download)
+    setMaxTh(config.download_threads_max)
+    setMinTh(config.download_threads_min)
+    setTotal(config.total_threads)
+    console.debug("config set")
+  }
+  
+  async function getDefaultConfig(): Promise<DownloadConfig> {
+    const msg = await browser.runtime.sendMessage({ event: 'GET_DEFAULT_CONFIG' });
+    return (msg as DownloadConfig);
+  }
+
+  browser.runtime.onMessage.addListener((message: any, handler, sendResponse) => {
+    try {
+      if (message == "Saved") setStatusText("Saved settings.")
+      let msg_obj = JSON.parse(message);
+      if (msg_obj.event == "GET_DEFAULT_CONFIG") {
+        setConfig(msg_obj);
+      }
+    } catch (e) {
+      console.debug(message)
+    }
+    sendResponse({ message });
+    return true;
+  })
 
   // Load current config from service worker on mount
   useEffect(() => {
-    const msg = browser.runtime.sendMessage({ event: 'GET_CONFIG' });    
-    msg.then((v) => {
-      console.debug(v);
-    })
+    browser.storage.local.get(['config']).then((config) => {
+      console.debug('config -> ', config.config);
+      if (!config || !config.config) {
+        console.debug('empty config');
+        getDefaultConfig().then((def_config) => {
+          if (!def_config) return setStatusText("Error on getting service information.");
+
+          console.debug('config passed -> ', def_config)
+          setConfig(def_config)
+        }).catch((e) => {          
+          console.error(e);
+          const settings = config.config as DownloadConfig;
+          setConfig(settings);
+          saveConfig();  
+        });
+      }
+
+      let setting = config.config as DownloadConfig
+      if (setting.download_threads_max <= 0)
+        setting.download_threads_max = 1;
+      
+      if (setting.download_threads_min <= 0)
+        setting.download_threads_min = 1;
+      
+      setConfig(setting);
+    }).catch((e) => {
+      getDefaultConfig().then((def_config) => {
+        setConfig(def_config);
+      });
+      console.error(e);
+    });
   }, []);
 
   const saveConfig = () => {
     const config: DownloadConfig = {
-      filenamePattern: filename,
-      downloadFolder: folder,
+      download_threads_max: maxTh,
+      download_threads_min: minTh,
+      download: folder,
+      total_threads: total_threads
     };
 
     if (browser?.runtime?.sendMessage) {
-      browser.runtime.sendMessage(
-        { event: 'SET_CONFIG', config }
-      ).then((v) => {
-        console.log('Config saved.', v);        
+      browser.runtime.sendMessage({ event: 'SET_CONFIG', config }).then((v) => {
+        console.log('Config saved.', v);
       });
+    } else {
+      console.error("Browser does not expose 'sendMessage' in 'browser.runtime' object.")
+    }
+
+    if (browser?.storage?.local) {
+      browser.storage.local.set({config})
+    } else {
+      console.error("Browser does not expose 'browser.storage.local'.")
     }
   };
 
   return (
     <div className="sidebar_app">
-      <img className="sidebar_logo" src={iconUrl} alt="React logo" />
+      <img className="sidebar_logo" src={logo} color='white' />
       <h1 className="sidebar_title">Download Manager</h1>
 
       <div className="form-group">
-        <label htmlFor="filename">Filename pattern:</label>
+        <label htmlFor="max_threads">Maximum number of download threads:</label>
         <input
-          id="filename"
-          type="text"
-          value={filename}
-          onChange={(e) => setFilename(e.target.value)}
-          placeholder="e.g., myfile-{date}.txt"
+          id="max_threads"
+          type="number"
+          value={maxTh}
+          min={1}
+          max={total_threads}
+          onChange={(e) => setMaxTh(parseInt(e.target.value))}
+        />
+      </div>
+      <div className="form-group">
+        <label htmlFor="min_threads">Minimum number of download threads:</label>
+        <input
+          id="min_threads"
+          type="number"
+          value={minTh}
+          min={1}
+          max={total_threads}
+          onChange={(e) => setMinTh(parseInt(e.target.value))}
         />
       </div>
 
@@ -64,8 +152,9 @@ const SidebarApp = () => {
       </div>
 
       <button onClick={saveConfig}>Save Settings</button>
-      {status && <p className="status">{status}</p>}
 
+      {statusLabel()}
+      
       <p className="sidebar_description">
         Settings are sent to the service worker, which manages the WebSocket
         connection. See{' '}

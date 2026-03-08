@@ -51,8 +51,8 @@ pub async fn download_chunk(
             drop(file);
             let mut count = task_count.lock().unwrap();
             *count -= 1;
-
             drop(count);
+
             
             pb.finish_and_clear();
             return;
@@ -77,7 +77,7 @@ pub fn parse_filename_from_url(url_string: String) -> String {
 }
 
 #[tokio::main] 
-pub async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
+pub async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>, threads_max: usize, threads_min: usize)
                                  -> Result<String, String> {
     if !is_url(url) {
         return Err(format!("Invalid URL."));
@@ -158,9 +158,9 @@ pub async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
 
     let chunk_size: usize = if total_size > 1024 * 1024 * 40 {
         if total_size >= 1024 * 1024 * 1024 {
-            (total_size / 5) as usize
+            (total_size as usize).div_ceil(threads_max)
         } else {
-            (total_size / 3) as usize
+            (total_size as usize).div_ceil(threads_min)
         }
     } else {
         total_size as usize
@@ -168,7 +168,7 @@ pub async fn download_file_in_pieces(url: &str, task_count: Arc<Mutex<usize>>)
 
     let mpb = MultiProgress::new();
 
-    let mut pieces: HashMap<u16, String> = HashMap::new();    
+    let mut pieces: HashMap<u16, String> = HashMap::new();  
     let mut index : u16 = 0;
     let mut set = JoinSet::new();
 

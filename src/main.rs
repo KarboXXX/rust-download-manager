@@ -40,7 +40,7 @@ fn slice_from_start(s: String, n: usize) -> String {
 fn usage_message() -> io::Result<()> {
     let command = std::env::args().into_iter().next().unwrap();
     println!("{} help - shows this message", command);
-    println!("{} monitor - enter monitor mode and wait for downloads from your browser.\n", command);
+    println!("{} monitor [-v for verbose] - enter monitor mode and wait for downloads from your browser.\n", command);
 
     return Ok(());
 }
@@ -49,12 +49,13 @@ fn usage_message() -> io::Result<()> {
 async fn main() -> io::Result<()> {
     if std::env::args().into_iter().len() > 1 {
         print!("\n");
-        let argument = std::env::args().into_iter().nth(1).unwrap();
-        if argument.contains("help") {
+        let mode_argument = std::env::args().into_iter().nth(1).unwrap();
+        let verbose_argument = std::env::args().into_iter().nth(2).unwrap_or(String::new());
+        if mode_argument.contains("help") {
             let _ = usage_message();
             return Ok(())
-        } else if argument.contains("monitor") {
-            return monitor().await;
+        } else if mode_argument.contains("monitor") {
+            return monitor(verbose_argument.contains("-v")).await;
         } else {
             let _ = usage_message();
             return Ok(())
@@ -192,13 +193,16 @@ async fn main() -> io::Result<()> {
                             stdout.write(loading_message.as_bytes()).unwrap();
                             stdout.queue(MoveTo(0,rendering.h-1)).unwrap();
                             stdout.flush().unwrap();
-                            
+
+                            let threads = thread::available_parallelism().unwrap().get();
                             thread::scope(|s| {
                                 s.spawn(|| {
                                     let start_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
                                     let download_try = download_file_in_pieces(
                                         &this_url,
-                                        task_count
+                                        task_count,
+                                        threads.div_ceil(2),
+                                        threads.div_ceil(3)
                                     );
                                     if let Ok(filename) = download_try {
                                         let finished_timestamp: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - start_timestamp;

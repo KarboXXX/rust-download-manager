@@ -1,4 +1,4 @@
-import iconUrl from '../images/icon.png'
+import iconUrl from '../images/rust.png'
 const logo = iconUrl
 
 export default function ContentApp() {

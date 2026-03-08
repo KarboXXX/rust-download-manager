@@ -17,6 +17,10 @@ function connectWebSocket() {
 
   ws.onmessage = (data) => {
     console.log('WebSocket received message:', data.data)
+    browser.runtime.sendMessage(data.data).then((v) => {
+      // console.debug("front-end answered:", v);
+      return true
+    })
   }
   
   ws.onerror = (err) => {
@@ -31,12 +35,11 @@ function sendToMonitor(message: object): boolean {
   
   try {
     ws.send(JSON.stringify(message));
+    return true
   } catch (e) {
     console.error(e);
     return false;
   }
-  
-  return true;
 }
 
 async function registerDownload(downloadItem: browser.Downloads.DownloadItem) {
@@ -57,6 +60,16 @@ async function registerDownload(downloadItem: browser.Downloads.DownloadItem) {
   // browser.downloads.erase({ id: downloadItem.id });
 };
 
+function monitorMessageHandler(message: any) {
+    console.debug(message)
+    if (!message) return;
+    if (message.type && message.type === 'openSidebar')
+      browser.sidebarAction.open()
+    
+    sendToMonitor(message);
+    return true
+}
+
 const isFirefoxLike =
   import.meta.env.EXTENSION_PUBLIC_BROWSER === 'firefox' ||
   import.meta.env.EXTENSION_PUBLIC_BROWSER === 'gecko-based'
@@ -67,28 +80,15 @@ if (isFirefoxLike) {
     browser.sidebarAction.open()
   })
 
-  browser.runtime.onMessage.addListener((message: any) => {
-    if (!message) return;
-    if (message.type === 'openSidebar') 
-      browser.sidebarAction.open()
-    
-    sendToMonitor(message);
-  })
-
+  browser.downloads.onCreated.addListener(registerDownload);
+  browser.runtime.onMessage.addListener(monitorMessageHandler);
 }
 
 if (!isFirefoxLike) {
   connectWebSocket();
+  
   browser.downloads.onCreated.addListener(registerDownload);
-
-  browser.runtime.onMessage.addListener((message: any, sender: any) => {
-    console.debug(message, sender)
-    if (!message) return;
-    if (message.type && message.type === 'openSidebar')
-      browser.sidebarAction.open()
-
-    sendToMonitor(message);
-  })
+  browser.runtime.onMessage.addListener(monitorMessageHandler)
   
   chrome.action.onClicked.addListener(() => {
     chrome.sidePanel.setPanelBehavior({openPanelOnActionClick: true})
