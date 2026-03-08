@@ -1,3 +1,4 @@
+[![Rust](https://github.com/KarboXXX/rust-download-manager/actions/workflows/rust.yml/badge.svg)](https://github.com/KarboXXX/rust-download-manager/actions/workflows/rust.yml)
 ## Overview
 **KDM** is an *Asynchronous Downloader*. 
 **KDM** é um *Instalador assíncrono*.
