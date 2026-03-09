@@ -95,6 +95,8 @@ pub async fn monitor(verbose: bool) -> io::Result<()> {
                     
                     if max_threads <= 0 {max_threads = 1}
                     if min_threads <= 0 {min_threads = 1}
+                    if max_threads > threads {max_threads = threads};
+                    if min_threads > threads {min_threads = threads};
 
                     if !Path::new(&download).exists() {
                         eprintln!("Directory '{}' does not exist.", download);
