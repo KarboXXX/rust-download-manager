@@ -34,14 +34,13 @@ pub async fn monitor(verbose: bool) -> io::Result<()> {
         let async_stream = accept_async(stream).await;
         
         if let Err(err) = async_stream {
-            eprintln!("An error occurred on initial websocket handshake: {:?}", err);
+            eprintln!("An error occurred on websocket handshake: {:?}", err);
             continue;
         }
 
         let websocket = async_stream.unwrap();
         println!("websocket connected. listening channel...");
         let (mut sink, mut stream) = websocket.split();
-        
         while let Some(reading) = stream.next().await {
             if let Err(err) = reading {
                 eprintln!("Failed to read packet. {:?}", err);
