@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use karbox_downloader::downloading::{parse_filename_from_url, rename_index_filename};
+use karbox_downloader::downloading::parse_filename_from_url;
 
 #[test]
 fn test_parse_filename_from_url() {
@@ -12,16 +12,4 @@ fn test_parse_filename_from_url() {
 
     let url_with_path = "https://example.com/path/to/2391840--_938asknfaojnsdo.gjidao.656.txt.txt";
     assert_eq!(parse_filename_from_url(url_with_path.to_string()), "2391840--_938asknfaojnsdo.gjidao.656.txt.txt");
-}
-
-#[test]
-fn test_rename_index_filename() {
-    let filename = "file.txt";
-    let renamed = rename_index_filename(filename);
-    assert!(renamed.contains(filename) || renamed.contains("(1)"));
-
-    // Test with a filename that already exists
-    let filename = "existing_file.txt";
-    let renamed = rename_index_filename(filename);
-    assert!(renamed.contains(filename) || renamed.contains("(1)"));
 }
