@@ -7,7 +7,7 @@ pub struct RenderingManager {
     rendering: bool,
     pub w: u16,
     pub h: u16,
-    fps: i16,
+    pub fps: i16,
     interval: u64
 }
 

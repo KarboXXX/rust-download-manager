@@ -107,7 +107,7 @@ impl Prompt {
 
 #[derive(Default, Clone)]
 pub struct DownloadResults {
-    dr: Vec<String>
+    pub dr: Vec<String>
 }
 
 impl DownloadResults {

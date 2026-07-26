@@ -1,15 +1,13 @@
 #![warn(dead_code)]
 #![allow(unused_braces)]
-#![warn(unused)]            
+#![warn(unused)]
 
-mod downloading;
-mod interaction;
-mod rendering;
-mod monitor;
-use downloading::{download_file_in_pieces};
-use interaction::{Prompt, DownloadResults};
-use rendering::{RenderingManager};
-use monitor::monitor;
+use karbox_downloader::download_file_in_pieces; 
+use karbox_downloader::{Prompt, DownloadResults};
+use karbox_downloader::RenderingManager;
+use karbox_downloader::monitor;
+
+use karbox_downloader::slice_from_start;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -23,15 +21,6 @@ use crossterm::event::{self, poll, read, Event, KeyCode, KeyModifiers, EnableBra
                        DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture};
 use crossterm::{QueueableCommand, ExecutableCommand};
 use directories::{UserDirs};
-
-
-// fn slice_from_end(s: &str, n: usize) -> Option<&str> {
-//     s.char_indices().rev().nth(n).map(|(i, _)| &s[i..])
-// }
-
-fn slice_from_start(s: String, n: usize) -> String {
-    s.chars().into_iter().take(n).collect()
-}
 
 fn usage_message() -> io::Result<()> {
     let command = std::env::args().into_iter().next().unwrap();
